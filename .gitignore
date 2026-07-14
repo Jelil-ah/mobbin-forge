@@ -1,6 +1,17 @@
 node_modules/
 dist/
-.env
 *.log
-.playwright-mcp/
-scripts/
+.env
+# scripts de test/debug de session (pas du code produit)
+check-types.sh
+run-build-and-test.sh
+test-curl.sh
+test-live.ts
+verify-all.sh
+# jamais commit un token
+.mobbin-mcp/
+auth.json
+cap*.mjs
+verify-fix.mjs
+test-live.ts
+.agents/

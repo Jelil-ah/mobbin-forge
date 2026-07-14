@@ -232,7 +232,8 @@ export class MobbinApiClient {
    * Endpoint: `GET /api/searchable-apps/{platform}`
    */
   async getSearchableApps(platform: string): Promise<SearchableApp[]> {
-    return this.request(`/api/searchable-apps/${platform}`, searchableAppsResponseSchema);
+    const response = await this.request(`/api/searchable-apps/${platform}`, searchableAppsResponseSchema);
+    return response.value;
   }
 
   /**
@@ -242,8 +243,8 @@ export class MobbinApiClient {
   async getPopularApps(params: {
     platform: string;
     limitPerCategory?: number;
-  }): Promise<ValueResponse<PopularAppEntry[]>> {
-    return this.request(
+  }): Promise<Record<string, PopularAppEntry[]>> {
+    const response = await this.request(
       "/api/popular-apps/fetch-popular-apps-with-preview-screens",
       popularAppsResponseSchema,
       {
@@ -254,6 +255,7 @@ export class MobbinApiClient {
         },
       },
     );
+    return response.value;
   }
 
   /**

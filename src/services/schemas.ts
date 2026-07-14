@@ -23,10 +23,10 @@ export const searchableAppSchema = z
     id: z.string(),
     platform: z.string(),
     appName: z.string(),
-    appLogoUrl: z.string(),
-    appTagline: z.string(),
-    keywords: z.array(z.string()),
-    previewScreens: z.array(previewScreenSchema).nullable(),
+    appLogoUrl: z.string().optional(),
+    appTagline: z.string().optional(),
+    keywords: z.array(z.string()).optional().default([]),
+    previewScreens: z.array(previewScreenSchema).nullable().optional(),
   })
   .passthrough();
 
@@ -278,11 +278,11 @@ export const popularAppEntrySchema = z
   .object({
     app_id: z.string(),
     app_name: z.string(),
-    app_logo_url: z.string(),
-    preview_screens: z.array(z.object({ id: z.string(), screenUrl: z.string() }).passthrough()),
-    app_category: z.string(),
-    secondary_app_categories: z.array(z.string()),
-    popularity_metric: z.number(),
+    app_logo_url: z.string().optional(),
+    preview_screens: z.array(z.object({ id: z.string(), screenUrl: z.string() }).passthrough()).optional().default([]),
+    app_category: z.string().optional(),
+    secondary_app_categories: z.array(z.string()).optional().default([]),
+    popularity_metric: z.number().optional(),
   })
   .passthrough();
 
@@ -375,8 +375,8 @@ export const valueResponseSchema = <T extends z.ZodTypeAny>(data: T) =>
 export const searchAppsResponseSchema = contentSearchResponseSchema(appResultSchema);
 export const searchScreensResponseSchema = contentSearchResponseSchema(screenResultSchema);
 export const searchFlowsResponseSchema = contentSearchResponseSchema(flowResultSchema);
-export const searchableAppsResponseSchema = z.array(searchableAppSchema);
-export const popularAppsResponseSchema = valueResponseSchema(z.array(popularAppEntrySchema));
+export const searchableAppsResponseSchema = valueResponseSchema(z.array(searchableAppSchema));
+export const popularAppsResponseSchema = valueResponseSchema(z.record(z.array(popularAppEntrySchema)));
 export const collectionsResponseSchema = valueResponseSchema(z.array(collectionSchema));
 export const dictionaryDefinitionsResponseSchema = valueResponseSchema(
   z.array(dictionaryCategorySchema),

@@ -300,24 +300,16 @@ async function main() {
       limit_per_category: z.number().min(1).max(20).default(10).describe("Max apps per category"),
     },
     async ({ platform, limit_per_category }) => {
-      const result = await client.getPopularApps({
+      const appsByCategory = await client.getPopularApps({
         platform,
         limitPerCategory: limit_per_category,
       });
 
-      const apps = result.value;
-      if (apps.length === 0) {
+      if (Object.keys(appsByCategory).length === 0) {
         return { content: [{ type: "text", text: "No popular apps found." }] };
       }
 
-      const grouped = new Map<string, typeof apps>();
-      for (const app of apps) {
-        const cat = app.app_category;
-        if (!grouped.has(cat)) grouped.set(cat, []);
-        grouped.get(cat)!.push(app);
-      }
-
-      const text = Array.from(grouped.entries())
+      const text = Object.entries(appsByCategory)
         .map(
           ([cat, catApps]) =>
             `## ${cat}\n` +
