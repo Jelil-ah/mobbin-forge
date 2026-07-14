@@ -105,17 +105,17 @@ export const screenResultSchema = z
  */
 export const flowScreenSchema = z
   .object({
-    order: z.number(),
-    hotspotType: z.string().nullable(),
-    hotspotX: z.number().nullable(),
-    hotspotY: z.number().nullable(),
-    hotspotWidth: z.number().nullable(),
-    hotspotHeight: z.number().nullable(),
-    videoTimestamp: z.number().nullable(),
-    screenUrl: z.string(),
+    order: z.number().optional().default(0),
+    hotspotType: z.string().nullable().optional(),
+    hotspotX: z.number().nullable().optional(),
+    hotspotY: z.number().nullable().optional(),
+    hotspotWidth: z.number().nullable().optional(),
+    hotspotHeight: z.number().nullable().optional(),
+    videoTimestamp: z.number().nullable().optional(),
+    screenUrl: z.string().optional().default(""),
     screenId: z.string(),
-    width: z.number(),
-    height: z.number(),
+    width: z.number().optional().default(0),
+    height: z.number().optional().default(0),
   })
   .passthrough();
 
@@ -123,14 +123,14 @@ export const flowResultSchema = z
   .object({
     id: z.string(),
     name: z.string(),
-    actions: z.array(z.string()),
-    videoUrl: z.string().nullable(),
-    screens: z.array(flowScreenSchema),
+    actions: z.array(z.string()).optional().default([]),
+    videoUrl: z.string().nullable().optional(),
+    screens: z.array(flowScreenSchema).optional().default([]),
     appVersionId: z.string().optional(),
     appId: z.string().optional(),
     appName: z.string().optional(),
     appCategory: z.string().optional(),
-    appLogoUrl: z.string().optional(),
+    appLogoUrl: z.string().nullable().optional(),
     platform: z.string().optional(),
   })
   .passthrough();

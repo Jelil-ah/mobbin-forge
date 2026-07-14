@@ -600,10 +600,44 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
     const raw = sliceBalanced(stream, braceStart);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as Array<{ value?: { screens?: unknown[] } }>;
+        const parsed = JSON.parse(raw) as Array<{
+          value?: {
+            screens?: Array<Record<string, unknown>>;
+            partialFlows?: Array<Record<string, unknown>>;
+          };
+        }>;
         const structured = parsed[0]?.value?.screens;
         if (Array.isArray(structured) && structured.length > 0) {
-          return [{ value: [] }, { value: structured }, { value: {} }];
+          // Index screens by id so each flow's screen refs (which carry only
+          // screenId + order + hotspot) can be enriched with the real URL and
+          // dimensions from the flat screens list.
+          const byId = new Map<string, Record<string, unknown>>();
+          for (const s of structured) {
+            const id = s.id as string | undefined;
+            if (id) byId.set(id, s);
+          }
+
+          const partialFlows = parsed[0]?.value?.partialFlows ?? [];
+          const flows = partialFlows.map((f) => {
+            const flowScreens = ((f.screens as Array<Record<string, unknown>>) ?? []).map((fs) => {
+              const full = byId.get(fs.screenId as string) ?? {};
+              return {
+                ...fs,
+                screenUrl: (full.screenUrl as string) ?? "",
+                width: (full.width as number) ?? 0,
+                height: (full.height as number) ?? 0,
+              };
+            });
+            // Flows expose clips via videoCdnVideoSources, not a flat videoUrl.
+            const videoSources = f.videoCdnVideoSources as Array<{ url?: string }> | undefined;
+            return {
+              ...f,
+              videoUrl: videoSources?.[0]?.url ?? null,
+              screens: flowScreens,
+            };
+          });
+
+          return [{ value: flows }, { value: structured }, { value: {} }];
         }
       } catch {
         // Fall through to the regex fallback below if the chunk won't parse.
