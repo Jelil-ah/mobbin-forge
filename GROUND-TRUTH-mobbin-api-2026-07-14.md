@@ -49,3 +49,34 @@ Ces routes renvoient toutes 404 (Mobbin les a bougées, forme inconnue):
 1. Déballer `.value` sur searchable-apps + popular-apps (fix immédiat, testable) — débloque déjà la fouille via app pages
 2. Retrouver les routes search-* déplacées via capture réseau Playwright
 3. Ajouter des tests qui matchent la forme RÉELLE ci-dessus (pas l'ancienne)
+
+---
+
+## ADDENDUM 2026-07-14 (soir) — ROUTE SCREENS RETROUVÉE (capture réseau Playwright)
+
+La recherche filtrée `/api/content/search-*` est bien morte (RSC). MAIS `getAppScreens` est réparable — la page screens d'une app existe, route changée :
+
+### Vraie route (CONFIRMÉE 200, 20 screenUrls dans le flight)
+`GET /apps/{slug}-{platform}-{appId}/_/screens`  ← note le `/_/` avant "screens"
+(variante avec version: `/apps/{slug}-{platform}-{appId}/{appVersionId}/screens`)
+
+Le HTML rend via Next.js RSC : `self.__next_f.push([1,"..."])`. Les screenUrl sont dedans sous forme `content/app_screens/{uuid}.png`.
+
+### BUG #1 — le slug est FAUX
+`slugifyAppName("ChatGPT")` produit `chatgpt` mais Mobbin attend `chat-gpt` (tiret entre les mots camelCase). L'ancien code kebab-case simple ne coupe pas les frontières de casse.
+- Exemples réels capturés : `chat-gpt`, `otter-ai`, `granola`, `obsidian`
+- Fix slug : insérer un tiret aux frontières camelCase AVANT de kebab-caser (ex: "ChatGPT" → "chat-gpt", "OtterAI" → "otter-ai"). Attention aux acronymes.
+- ROBUSTE : ne PAS calculer le slug côté client. La searchable-apps API ne renvoie pas le slug. Option fiable = requêter `/apps/{platform}/{appId}` ou suivre la redirection depuis une URL canonique. À investiguer, sinon best-effort slugify amélioré.
+
+### BUG #2 — route path
+`getAppPage` dans api-client.ts construit `/apps/${slug}/screens`. La vraie route est `/apps/${slug}/_/screens` (segment `/_/`).
+
+### BUG #3 — parsing du flight
+`extractAppPagePayload(html)` cherchait probablement l'ancien format. Le nouveau : concaténer tous les `self.__next_f.push([1,"<chunk>"])`, unescaper, puis chercher les objets screens. Les screenUrl matchent `/content\/app_screens\/[a-f0-9-]+\.png/`. Fallback simple si le parsing structuré casse : extraire les screenUrl par regex sur le flight concaténé (ça donne au moins les images, testé: 20 trouvées).
+
+### Routes annexes capturées (bonus, pour plus tard)
+- POST /api/app/fetch-recommended-apps  body {platform, appCategory}
+- POST /api/content/fetch-total-screens-count
+- POST /api/saved/fetch-saved-contents  body {contentType, contentIds:[...]}
+- GET /apps/{slug}/{versionId}/flows  et  /ui-elements
+- GET /screens/{screenId}  (page d'un screen individuel)

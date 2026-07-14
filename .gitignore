@@ -15,3 +15,5 @@ cap*.mjs
 verify-fix.mjs
 test-live.ts
 .agents/
+investigate-search.mjs
+test-chatgpt-screens.ts
