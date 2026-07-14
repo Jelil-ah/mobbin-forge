@@ -17,7 +17,7 @@ The [original mobbin-mcp](https://github.com/pdcolandrea/mobbin-mcp) stopped wor
 - **Unwraps `.value`** on searchable-apps and popular-apps endpoints
 - **Fixes type drift** (popularApps now returns a category-grouped object, not a flat array)
 - **Confirms what works** (893 real apps, 42 categories, CDN image downloads — tested live 2026-07-14)
-- **Documents what's broken** (search routes moved to unknown URLs — needs network capture to find them)
+- **Documents what's broken** (global filtered search is now client-side SPA filtering — see Known issues)
 
 Ground truth API responses captured 2026-07-14 are in the repo. No guessing.
 
@@ -25,6 +25,7 @@ Ground truth API responses captured 2026-07-14 are in the repo. No guessing.
 
 ✅ **`getSearchableApps(platform)`** — 893 real apps (Disney+, Google Fit, Hers, ChatGPT, Arc Search...)  
 ✅ **`getPopularApps(platform)`** — 42 categories grouped (ai, finance, crypto, productivity, news...)  
+✅ **`getAppScreens(appId, platform)`** — pulls ~20 real screens for any app. Live-verified on ChatGPT, Revolut, Notion, Spotify, Airbnb, Claude (20 screens each) + image download works. This is the big one: point at any app, get its full screen set to dissect section by section.  
 ✅ **Image downloads** — CDN URLs via Bytescale (public, no auth, tested with real webp files)  
 ✅ **Auth** — Session cookie stored chmod 600 in `~/.mobbin-mcp/auth.json`, free account works  
 
@@ -43,7 +44,7 @@ Ground truth API responses captured 2026-07-14 are in the repo. No guessing.
 
 ## Known issues
 
-❌ **Search routes moved** — `/api/content/search-screens`, `search-apps`, `search-flows` all return 404. Mobbin relocated them; the new URLs are unknown. The tools that hit app-specific pages (searchable/popular) work, but filtered search doesn't. To fix this: open mobbin.com in Chrome DevTools, run a search, capture the POST request, update `src/services/api-client.ts` lines 126/158/191 with the real routes. Investigation playbook in `investigate-search-routes.md`.
+❌ **Global filtered search unavailable** — `/api/content/search-screens`, `search-apps`, `search-flows` now use **client-side SPA filtering** instead of clean POST endpoints. The search state lives in Next.js hydration (`__next_f.push`) and isn't directly callable. But: getAppScreens + the 42 categories let you dig app-by-app, so the missing global search doesn't block real usage. To restore it: open mobbin.com in Chrome DevTools, run a filtered search, capture how the client-side router handles it, reverse-engineer the SPA state. Investigation playbook in `investigate-search-routes.md`.
 
 ## Setup
 
@@ -128,6 +129,8 @@ Add to your MCP config (`~/Library/Application Support/Claude/claude_desktop_con
 ## How it works
 
 Mobbin runs on Next.js + Supabase. This server calls internal API routes (`/api/searchable-apps`, `/api/popular-apps/fetch-popular-apps-with-preview-screens`) using your session cookie. Tokens auto-refresh via Supabase's `/auth/v1/token` endpoint and persist back to `~/.mobbin-mcp/auth.json`.
+
+**getAppScreens** parses the Next.js RSC flight stream (`__next_f.push`) from app detail pages (`/apps/{platform}/{slug}/_/screens`) to extract screen URLs, then fetches them via Mobbin's Bytescale CDN.
 
 Screen images are served through Mobbin's Bytescale CDN. `mobbin_get_screen_detail` converts Supabase storage URLs to CDN URLs, fetches the image, and returns base64 content Claude can see. Optional color extraction uses [sharp](https://sharp.pixelplumbing.com/).
 
