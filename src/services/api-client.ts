@@ -350,15 +350,15 @@ export class MobbinApiClient {
    * flows + screens. Mobbin's `/api/content/search-screens` and
    * `/api/content/search-flows` ignore per-app filters silently — confirmed
    * via probe — so the only authoritative per-app source is the HTML page
-   * at `/apps/{slug}-{platform}-{appId}/screens`. The page renders via
+   * at `/apps/{slug}-{platform}-{appId}/{versionId}/screens`. The page renders via
    * Next.js Server Components and inlines the structured data inside
    * `self.__next_f.push([1, "..."])` flight chunks; we concatenate the
    * chunks, locate the `[{"value":[...]}, ...]` payload, and parse it.
    *
    * Slug derivation: looked up via `getSearchableApps`, kebab-cased.
-   * AppVersionId is NOT required — Mobbin redirects to the latest version.
+   * AppVersionId is REQUIRED — we resolve it via a 307 redirect from the canonical app URL.
    *
-   * Endpoint: `GET /apps/{slug}-{platform}-{appId}/screens`
+   * Endpoint: `GET /apps/{slug}-{platform}-{appId}/{versionId}/screens`
    */
   async getAppPage(params: {
     appId: string;
@@ -372,9 +372,37 @@ export class MobbinApiClient {
       );
     }
     const slug = `${slugifyAppName(app.appName)}-${params.platform}-${params.appId}`;
-    const path = `/apps/${slug}/_/screens`;
-
     const cookie = await this.auth.getCookieValue();
+
+    // STEP 1: Resolve appVersionId via 307 redirect
+    const canonicalPath = `/apps/${slug}`;
+    const redirectRes = await fetch(`${MOBBIN_BASE_URL}${canonicalPath}`, {
+      headers: { Cookie: cookie },
+      redirect: "manual",
+    });
+
+    let versionId: string | null = null;
+    if (redirectRes.status === 307) {
+      const location = redirectRes.headers.get("location");
+      if (location) {
+        const versionMatch = location.match(/\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\//);
+        if (versionMatch) {
+          versionId = versionMatch[1];
+        }
+      }
+    }
+
+    // Fallback to /_/ if versionId not found (legacy behavior, likely wrong screens)
+    const path = versionId
+      ? `/apps/${slug}/${versionId}/screens`
+      : `/apps/${slug}/_/screens`;
+
+    if (!versionId) {
+      console.warn(
+        `[getAppPage] Could not resolve appVersionId for ${slug} — falling back to /_/ (screens may be incorrect)`,
+      );
+    }
+
     const res = await fetch(`${MOBBIN_BASE_URL}${path}`, {
       headers: {
         Cookie: cookie,
@@ -560,7 +588,31 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
     }
   }
 
-  // Extract all screenUrl paths: content/app_screens/{uuid}.png
+  // The real, un-polluted screens live in a deferred RSC dataPromise chunk shaped
+  // `<ref>:[{"value":{"partialFlows":[...],"screens":[...]}}]`. `value.screens` is a
+  // fully-structured array (screenUrl, width, height, screenElements, screenPatterns,
+  // appVersionId, ...) scoped to the TARGET app only. The naked
+  // `content/app_screens/{uuid}.png` regex used before also caught recommended-app
+  // preview URLs rendered at the top of the page, returning the WRONG app's screens.
+  const marker = stream.match(/[0-9a-f]+:\[\{"value":\{"partialFlows"/);
+  if (marker) {
+    const braceStart = stream.indexOf(":[", marker.index) + 1;
+    const raw = sliceBalanced(stream, braceStart);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as Array<{ value?: { screens?: unknown[] } }>;
+        const structured = parsed[0]?.value?.screens;
+        if (Array.isArray(structured) && structured.length > 0) {
+          return [{ value: [] }, { value: structured }, { value: {} }];
+        }
+      } catch {
+        // Fall through to the regex fallback below if the chunk won't parse.
+      }
+    }
+  }
+
+  // Fallback: naked screenUrl regex (legacy). May include recommended-app previews,
+  // so only used when the structured dataPromise chunk can't be located/parsed.
   const screenUrlRe = /content\/app_screens\/[a-f0-9-]+\.png/g;
   const screenPaths = Array.from(new Set(stream.match(screenUrlRe) || []));
 
@@ -570,9 +622,6 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
     );
   }
 
-  // Reconstruct full Supabase URLs with minimal required fields
-  // (appPageScreenSchema requires many fields; we fill them with minimal values
-  // since the RSC format doesn't expose structured JSON anymore)
   const screens = screenPaths.map((p) => {
     const uuid = p.match(/([a-f0-9-]+)\.png$/)?.[1] || "";
     return {
@@ -595,6 +644,38 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
     };
   });
 
-  // Return payload with empty flows (flows parsing not implemented yet)
   return [{ value: [] }, { value: screens }, { value: {} }];
+}
+
+/**
+ * Extract a balanced JSON array/object substring starting at `start` (which must
+ * point at the opening `[` or `{`). Respects string literals and escapes so braces
+ * inside strings don't throw off the depth counter. Returns null if unbalanced.
+ */
+function sliceBalanced(s: string, start: number): string | null {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let j = start; j < s.length; j++) {
+    const c = s[j];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (c === "\\") {
+      esc = true;
+      continue;
+    }
+    if (c === '"') {
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (c === "[" || c === "{") depth++;
+    else if (c === "]" || c === "}") {
+      depth--;
+      if (depth === 0) return s.slice(start, j + 1);
+    }
+  }
+  return null;
 }

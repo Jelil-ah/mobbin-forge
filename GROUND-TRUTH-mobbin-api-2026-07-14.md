@@ -80,3 +80,33 @@ Le HTML rend via Next.js RSC : `self.__next_f.push([1,"..."])`. Les screenUrl so
 - POST /api/saved/fetch-saved-contents  body {contentType, contentIds:[...]}
 - GET /apps/{slug}/{versionId}/flows  et  /ui-elements
 - GET /screens/{screenId}  (page d'un screen individuel)
+
+---
+
+## ADDENDUM #2 2026-07-14 (nuit) — BUG CRITIQUE getAppScreens : mauvais screens (CORRIGÉ, ground truth)
+
+### Le bug (prouvé aux pixels via vision QA)
+La route `/apps/{slug}-{platform}-{appId}/_/screens` répond 200 avec 20 screenUrls MAIS ce sont les screens d'un FEED MÉLANGÉ (discover/featured), PAS de l'app ciblée. Vérifié : télécharger "ChatGPT" via cette route donnait un screen Upwork/Afterpay. Le `/_/` est un placeholder de version qui tombe sur une page discover, pas la page app.
+
+### La vraie route (CONFIRMÉE — screen = vrai splash ChatGPT logo OpenAI)
+`GET /apps/{slug}-{platform}-{appId}/{appVersionId}/screens`
+→ il faut le VRAI appVersionId, pas `/_/`.
+
+### Comment obtenir l'appVersionId (2 étapes)
+1. GET `/apps/{slug}-{platform}-{appId}` en `redirect: manual` → renvoie **307** avec header `location: /apps/{slug}-{platform}-{appId}/{appVersionId}/...`
+2. Extraire l'appVersionId de ce location (regex `/([a-f0-9]{36})/` après l'appId).
+3. Puis fetch `/apps/{slug}-{platform}-{appId}/{appVersionId}/screens` et parser le flight comme avant (regex app_screens/{uuid}).
+
+Exemple vérifié :
+- ChatGPT appId=a96b7f4c-6bfa-4c9d-a6b7-562160feb391
+- GET /apps/chat-gpt-ios-{appId} → 307 → location contient versionId a0b14f48-3d1c-4286-828b-e95ad04fef10
+- GET /apps/chat-gpt-ios-{appId}/a0b14f48-.../screens → screens RÉELS de ChatGPT ✅
+
+### Fix requis dans api-client.ts getAppPage()
+- AVANT le fetch screens : faire le GET canonique `/apps/${slug}-${platform}-${appId}` en redirect:manual, choper le versionId depuis location.
+- Construire la route avec le versionId : `/apps/${slug}-${platform}-${appId}/${versionId}/screens`
+- Garder le parsing flight existant.
+- VÉRIFICATION OBLIGATOIRE : le fix n'est bon que si les screens téléchargés sont VISUELLEMENT de l'app ciblée (Hermes vision-check, pas juste le compte).
+
+### Piège de vérif (leçon)
+Compter 20 screenUrls ≠ 20 screens de la bonne app. TOUJOURS vision-check un screen téléchargé contre l'app attendue avant de déclarer "ça marche".
