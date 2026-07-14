@@ -14,7 +14,7 @@ An MCP server that works with [Mobbin](https://mobbin.com) — 600k+ real app sc
 
 ✅ **`getSearchableApps(platform)`** — 893 real apps (Disney+, ChatGPT, Arc Search...)  
 ✅ **`getPopularApps(platform)`** — 42 categories grouped (ai, finance, crypto, productivity...)  
-✅ **`getAppScreens(appId, platform)`** — ~20 real screens per app. Live-verified on ChatGPT, Revolut, Notion, Spotify, Airbnb, Claude. Point at any app, get its full screen set.  
+✅ **`getAppScreens(appId, platform)`** — the target app's full structured screen set, including patterns and UI elements. Pixel-verified on ChatGPT (384 screens), Claude (107), and Perplexity (131). Point at an app, get the right app — not recommendation noise.  
 ✅ **Image downloads** — CDN URLs via Bytescale (public, no auth, tested with real webp files)  
 ✅ **Auth** — Session cookie stored chmod 600 in `~/.mobbin-mcp/auth.json`, free account works  
 
@@ -75,7 +75,7 @@ claude mcp add mobbin -- npx -y mobbin-mcp
 
 ## How it works
 
-Calls Mobbin's internal API routes (`/api/searchable-apps`, `/api/popular-apps/fetch-popular-apps-with-preview-screens`) using your session cookie. Tokens auto-refresh via Supabase `/auth/v1/token` and persist to `~/.mobbin-mcp/auth.json`. **getAppScreens** parses Next.js RSC flight stream (`__next_f.push`) from app detail pages to extract screen URLs, fetches via Bytescale CDN. Optional color extraction uses [sharp](https://sharp.pixelplumbing.com/).
+Calls Mobbin's internal API routes using your session cookie. Tokens auto-refresh via Supabase and persist to `~/.mobbin-mcp/auth.json`. **getAppScreens** resolves the target app's real version, then parses its structured Next.js RSC data chunk — screens, patterns, elements, and dimensions — before downloading images through Bytescale. Optional color extraction uses [sharp](https://sharp.pixelplumbing.com/).
 
 ## Credits
 
