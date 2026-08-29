@@ -22,7 +22,7 @@ import {
   popularAppsResponseSchema,
   collectionsResponseSchema,
   collectionContentsResponseSchema,
-  dictionaryDefinitionsResponseSchema,
+  filterTagCatalogsResponseSchema,
   appPagePayloadSchema,
   appPageScreenSchema,
   flowResultSchema,
@@ -114,7 +114,17 @@ export class MobbinApiClient {
 
   /**
    * Search and browse apps with category filtering and pagination.
-   * Endpoint: `POST /api/content/search-apps`
+   *
+   * Endpoint: `POST /api/search/fetch-search-page-apps` — replaces the dead
+   * `/api/content/search-apps` (404 as of 2026-08-28; Mobbin renamed the whole
+   * `/api/content/search-*` family to `/api/search/fetch-search-page-*` and swapped
+   * the `filterOptions`/`paginationOptions` envelope for a single `searchQuery`
+   * object). `categories` takes display-name strings (e.g. "AI"), not category IDs —
+   * confirmed via probe: an ID filter silently matches zero rows. The route also
+   * rejects `sortBy: "trending"` (400) — apps only accept `"publishedAt"`, which
+   * matches the `mobbin_search_apps` tool's own sort enum, so this never sends it.
+   * Every `searchQuery` field must be present (use `null` for "no filter") — an
+   * omitted field triggers an empty-body 400.
    */
   async searchApps(params: {
     platform: string;
@@ -123,17 +133,16 @@ export class MobbinApiClient {
     pageIndex?: number;
     sortBy?: string;
   }): Promise<ContentSearchResponse<AppResult>> {
-    return this.request("/api/content/search-apps", searchAppsResponseSchema, {
+    return this.request("/api/search/fetch-search-page-apps", searchAppsResponseSchema, {
       method: "POST",
       body: {
         searchRequestId: "",
-        filterOptions: {
+        pageIndex: params.pageIndex ?? DEFAULT_PAGE_INDEX,
+        pageSize: params.pageSize ?? DEFAULT_PAGE_SIZE,
+        searchQuery: {
           platform: params.platform,
-          appCategories: params.appCategories ?? null,
-        },
-        paginationOptions: {
-          pageSize: params.pageSize ?? DEFAULT_PAGE_SIZE,
-          pageIndex: params.pageIndex ?? DEFAULT_PAGE_INDEX,
+          type: "filters",
+          categories: params.appCategories ?? null,
           sortBy: params.sortBy ?? "publishedAt",
         },
       },
@@ -142,7 +151,17 @@ export class MobbinApiClient {
 
   /**
    * Search screens across all apps by patterns, elements, or OCR keywords.
-   * Endpoint: `POST /api/content/search-screens`
+   *
+   * Endpoint: `POST /api/search/fetch-search-page-screens` — replaces the dead
+   * `/api/content/search-screens` (404 as of 2026-08-28), same route-family rename
+   * as {@link searchApps}. `categories` takes display-name strings, not IDs (see
+   * {@link searchApps}). `hasAnimation` only accepts `null` or `true` — the API
+   * 400s on a literal `false`, so there's no way to request "non-animated only";
+   * `false`/`undefined` are both treated as "no filter" (`null`). Every
+   * `searchQuery` field must be present, `null` where unset, or the route 400s.
+   * `screenKeywords` has no array equivalent on the new route — OCR text search
+   * moved to `textInScreenshotQuery` (a single string), so the array is joined with
+   * spaces (confirmed via probe: a space-joined multi-word query filters correctly).
    */
   async searchScreens(params: {
     platform: string;
@@ -155,21 +174,22 @@ export class MobbinApiClient {
     pageIndex?: number;
     sortBy?: string;
   }): Promise<ContentSearchResponse<ScreenResult>> {
-    return this.request("/api/content/search-screens", searchScreensResponseSchema, {
+    return this.request("/api/search/fetch-search-page-screens", searchScreensResponseSchema, {
       method: "POST",
       body: {
         searchRequestId: "",
-        filterOptions: {
+        pageIndex: params.pageIndex ?? DEFAULT_PAGE_INDEX,
+        pageSize: params.pageSize ?? DEFAULT_PAGE_SIZE,
+        searchQuery: {
           platform: params.platform,
-          screenPatterns: params.screenPatterns ?? null,
+          type: "filters",
+          categories: params.appCategories ?? null,
           screenElements: params.screenElements ?? null,
-          screenKeywords: params.screenKeywords ?? null,
-          appCategories: params.appCategories ?? null,
-          hasAnimation: params.hasAnimation ?? null,
-        },
-        paginationOptions: {
-          pageSize: params.pageSize ?? DEFAULT_PAGE_SIZE,
-          pageIndex: params.pageIndex ?? DEFAULT_PAGE_INDEX,
+          screenPatterns: params.screenPatterns ?? null,
+          textInScreenshotQuery: params.screenKeywords?.length
+            ? params.screenKeywords.join(" ")
+            : null,
+          hasAnimation: params.hasAnimation ? true : null,
           sortBy: params.sortBy ?? "trending",
         },
       },
@@ -178,7 +198,12 @@ export class MobbinApiClient {
 
   /**
    * Search user flows/journeys by action type (e.g., "Creating Account").
-   * Endpoint: `POST /api/content/search-flows`
+   *
+   * Endpoint: `POST /api/search/fetch-search-page-flows` — replaces the dead
+   * `/api/content/search-flows` (404 as of 2026-08-28), same route-family rename
+   * as {@link searchApps}. `flowActions`/`categories` take display-name strings,
+   * not IDs (see {@link searchApps}). Every `searchQuery` field must be present,
+   * `null` where unset, or the route 400s.
    */
   async searchFlows(params: {
     platform: string;
@@ -188,18 +213,17 @@ export class MobbinApiClient {
     pageIndex?: number;
     sortBy?: string;
   }): Promise<ContentSearchResponse<FlowResult>> {
-    return this.request("/api/content/search-flows", searchFlowsResponseSchema, {
+    return this.request("/api/search/fetch-search-page-flows", searchFlowsResponseSchema, {
       method: "POST",
       body: {
         searchRequestId: "",
-        filterOptions: {
+        pageIndex: params.pageIndex ?? DEFAULT_PAGE_INDEX,
+        pageSize: params.pageSize ?? DEFAULT_PAGE_SIZE,
+        searchQuery: {
           platform: params.platform,
+          type: "filters",
+          categories: params.appCategories ?? null,
           flowActions: params.flowActions ?? null,
-          appCategories: params.appCategories ?? null,
-        },
-        paginationOptions: {
-          pageSize: params.pageSize ?? DEFAULT_PAGE_SIZE,
-          pageIndex: params.pageIndex ?? DEFAULT_PAGE_INDEX,
           sortBy: params.sortBy ?? "trending",
         },
       },
@@ -229,10 +253,17 @@ export class MobbinApiClient {
   /**
    * Fetch the full list of apps for a platform (used for autocomplete cross-referencing).
    * This is a large response (~1000+ apps); results are cached by the Mobbin client.
-   * Endpoint: `GET /api/searchable-apps/{platform}`
+   *
+   * Endpoint: `POST /api/search-bar/fetch-searchable-apps` — replaces the dead
+   * `GET /api/searchable-apps/{platform}` (404 as of 2026-08-28). Same `{ value: T[] }`
+   * envelope as before; only the method/path/body shape changed.
    */
   async getSearchableApps(platform: string): Promise<SearchableApp[]> {
-    const response = await this.request(`/api/searchable-apps/${platform}`, searchableAppsResponseSchema);
+    const response = await this.request(
+      "/api/search-bar/fetch-searchable-apps",
+      searchableAppsResponseSchema,
+      { method: "POST", body: { platform } },
+    );
     return response.value;
   }
 
@@ -332,17 +363,45 @@ export class MobbinApiClient {
   /**
    * Fetch the full filter taxonomy — all app categories, screen patterns,
    * UI elements, and flow actions with definitions and content counts.
-   * Endpoint: `POST /api/filter-tags/fetch-dictionary-definitions`
+   *
+   * Endpoint: `POST /api/filter-tags/fetch-filter-tag-catalogs` — replaces the dead
+   * `/api/filter-tags/fetch-dictionary-definitions` (404 as of 2026-08-28). The new
+   * route's response shape is unrelated to the old one (grouped by experience then
+   * facet key, each facet an array of `{ id, displayName, tags }` groups — see
+   * {@link filterTagCatalogsResponseSchema}), so this method reshapes it into the
+   * legacy `DictionaryCategory[]` the rest of the app (and `mobbin_get_filters`'s
+   * `KIND_MATCHERS` substring matching on `slug`) already expects, rather than
+   * changing every downstream consumer.
    */
   async getDictionaryDefinitions(): Promise<ValueResponse<DictionaryCategory[]>> {
-    return this.request(
-      "/api/filter-tags/fetch-dictionary-definitions",
-      dictionaryDefinitionsResponseSchema,
-      {
-        method: "POST",
-        body: {},
-      },
+    const raw = await this.request(
+      "/api/filter-tags/fetch-filter-tag-catalogs",
+      filterTagCatalogsResponseSchema,
+      { method: "POST", body: {} },
     );
+
+    const facetKeys = ["appCategories", "screenPatterns", "screenElements", "flowActions"] as const;
+    const categories: DictionaryCategory[] = [];
+    for (const experience of ["mobile", "web"] as const) {
+      for (const facetKey of facetKeys) {
+        const groups = raw.value[experience][facetKey];
+        categories.push({
+          slug: facetKey,
+          displayName: facetKey,
+          experience,
+          subCategories: groups.map((group) => ({
+            displayName: group.displayName,
+            entries: group.tags.map((tag) => ({
+              ...tag,
+              definition: tag.definition ?? "",
+              contentCounts: tag.contentCounts ?? null,
+            })),
+          })),
+        });
+      }
+    }
+
+    return { value: categories };
   }
 
   /**

@@ -10,48 +10,80 @@ import { z } from "zod";
  * so Mobbin can add new fields without breaking the client.
  */
 
+/**
+ * The `/api/search/fetch-search-page-*` family (introduced when Mobbin retired
+ * `/api/content/search-*`) dropped the flat `screenUrl` string from preview
+ * screens in favor of `screenCdnImgSources.src`. Accept either shape and
+ * normalize to `screenUrl` so downstream formatters don't need to know which
+ * route produced the data.
+ */
 export const previewScreenSchema = z
   .object({
     id: z.string(),
-    screenUrl: z.string(),
+    screenUrl: z.string().optional(),
+    screenCdnImgSources: z.object({ src: z.string() }).passthrough().optional(),
     isUserScreen: z.boolean().optional(),
   })
-  .passthrough();
+  .passthrough()
+  .transform((data) => ({
+    ...data,
+    screenUrl: data.screenUrl ?? data.screenCdnImgSources?.src ?? "",
+  }));
 
+/**
+ * `/api/search-bar/fetch-searchable-apps` (replacement for the old
+ * `GET /api/searchable-apps/{platform}`) serves the logo as
+ * `appLogoCdnImgSources.src` instead of a flat `appLogoUrl`. Normalize the
+ * same way as {@link previewScreenSchema}.
+ */
 export const searchableAppSchema = z
   .object({
     id: z.string(),
     platform: z.string(),
     appName: z.string(),
     appLogoUrl: z.string().optional(),
+    appLogoCdnImgSources: z.object({ src: z.string() }).passthrough().optional(),
     appTagline: z.string().optional(),
     keywords: z.array(z.string()).optional().default([]),
     previewScreens: z.array(previewScreenSchema).nullable().optional(),
   })
-  .passthrough();
+  .passthrough()
+  .transform((data) => ({
+    ...data,
+    appLogoUrl: data.appLogoUrl ?? data.appLogoCdnImgSources?.src,
+  }));
 
+/**
+ * Rows returned by `/api/search/fetch-search-page-apps` (replacement for the
+ * old `/api/content/search-apps`, confirmed dead 2026-08-28). The new route
+ * dropped `appCategory`, `allAppCategories`, `keywords`, `popularityMetric`,
+ * and `trendingMetric` entirely, and swapped `previewVideoUrl` for
+ * `previewVideoCdnVideoSources` — relax those to optional rather than
+ * required so validation doesn't reject live data.
+ */
 export const appResultSchema = z
   .object({
     id: z.string(),
     appName: z.string(),
-    appCategory: z.string(),
-    allAppCategories: z.array(z.string()),
+    appCategory: z.string().optional(),
+    allAppCategories: z.array(z.string()).optional(),
     appLogoUrl: z.string(),
     appTagline: z.string(),
     platform: z.string(),
-    keywords: z.array(z.string()),
+    keywords: z.array(z.string()).optional(),
     appVersionId: z.string(),
     appVersionPublishedAt: z.string(),
     previewScreens: z.array(previewScreenSchema),
-    previewVideoUrl: z.string().nullable(),
-    popularityMetric: z.number(),
-    trendingMetric: z.number(),
+    previewVideoUrl: z.string().nullable().optional(),
+    popularityMetric: z.number().optional(),
+    trendingMetric: z.number().optional(),
     isRestricted: z.boolean(),
   })
   .passthrough();
 
 /**
- * Rows returned by `/api/content/search-screens`.
+ * Rows returned by `/api/search/fetch-search-page-screens` (replacement for the
+ * old `/api/content/search-screens`, confirmed dead 2026-08-28).
  *
  * Mobbin returns one of two shapes depending on the filter:
  *   - **Full shape** (no filter, or filtered by `screenPatterns` / `appCategories`)
@@ -63,14 +95,15 @@ export const appResultSchema = z
  *     plus `createdAt`.
  *
  * The optional fields below cover the trimmed shape; everything still required
- * is present in both.
+ * is present in both. `fullpageScreenUrl` is absent entirely on the new route
+ * (replaced by `fullpageScreenCdnImgSources`), so it's optional now too.
  */
 export const screenResultSchema = z
   .object({
     type: z.string(),
     id: z.string(),
     screenUrl: z.string(),
-    fullpageScreenUrl: z.string().nullable(),
+    fullpageScreenUrl: z.string().nullable().optional(),
     screenPatterns: z.array(z.string()),
     screenElements: z.array(z.string()),
     appVersionId: z.string(),
@@ -102,6 +135,10 @@ export const screenResultSchema = z
  * Actual shape returned by `/api/content/search-flows` — confirmed via the probe in
  * commit 439d3d7. The interface previously declared `screenPatterns` and `metadata`,
  * which the API never sends; that mismatch is exactly what this validation prevents.
+ *
+ * `/api/search/fetch-search-page-flows` (the route's 2026-08-28 replacement) dropped
+ * the flat `screenUrl` in favor of `screenCdnImgSources.src` — same normalization
+ * as {@link previewScreenSchema}.
  */
 export const flowScreenSchema = z
   .object({
@@ -112,13 +149,27 @@ export const flowScreenSchema = z
     hotspotWidth: z.number().nullable().optional(),
     hotspotHeight: z.number().nullable().optional(),
     videoTimestamp: z.number().nullable().optional(),
-    screenUrl: z.string().optional().default(""),
+    screenUrl: z.string().optional(),
+    screenCdnImgSources: z.object({ src: z.string() }).passthrough().optional(),
     screenId: z.string(),
     width: z.number().optional().default(0),
     height: z.number().optional().default(0),
   })
-  .passthrough();
+  .passthrough()
+  .transform((data) => ({
+    ...data,
+    screenUrl: data.screenUrl ?? data.screenCdnImgSources?.src ?? "",
+  }));
 
+/**
+ * Rows returned by `/api/search/fetch-search-page-flows` (replacement for the old
+ * `/api/content/search-flows`, confirmed dead 2026-08-28). The new route uses
+ * `restricted` instead of an `isRestricted`/`appCategory` pair, and exposes video via
+ * `videoCdnVideoSources` rather than a flat `videoUrl` — every live sample's
+ * `videoCdnVideoSources` was either `null` or an unplayable placeholder
+ * (`data:video/mp4,`), so `videoUrl` is left optional/nullable and simply comes
+ * back unset for rows sourced from the new route (formatters already guard on it).
+ */
 export const flowResultSchema = z
   .object({
     id: z.string(),
@@ -271,6 +322,54 @@ export const dictionaryCategorySchema = z
         })
         .passthrough(),
     ),
+  })
+  .passthrough();
+
+/**
+ * Raw shape returned by `/api/filter-tags/fetch-filter-tag-catalogs` (replacement
+ * for the old `/api/filter-tags/fetch-dictionary-definitions`, confirmed dead
+ * 2026-08-28). Structurally different from the legacy dictionary response — grouped
+ * by experience (`mobile`/`web`/`sites`) then by facet key, each facet an array of
+ * `{ id, displayName, tags: [...] }` groups rather than the old
+ * `{ slug, subCategories: [{ entries }] }` shape. `MobbinApiClient.getDictionaryDefinitions`
+ * transforms this into `DictionaryCategory[]` so the rest of the app (and the
+ * `mobbin_get_filters` tool) never sees the new shape.
+ */
+const filterTagEntrySchema = z
+  .object({
+    id: z.string(),
+    displayName: z.string(),
+    definition: z.string().optional(),
+    hidden: z.boolean().optional(),
+    contentCounts: z.record(z.union([z.record(z.number()), z.number()])).nullable().optional(),
+  })
+  .passthrough();
+
+const filterTagGroupSchema = z
+  .object({
+    id: z.string(),
+    displayName: z.string(),
+    tags: z.array(filterTagEntrySchema),
+  })
+  .passthrough();
+
+const filterTagExperienceSchema = z
+  .object({
+    appCategories: z.array(filterTagGroupSchema),
+    screenPatterns: z.array(filterTagGroupSchema),
+    screenElements: z.array(filterTagGroupSchema),
+    flowActions: z.array(filterTagGroupSchema),
+  })
+  .passthrough();
+
+export const filterTagCatalogsResponseSchema = z
+  .object({
+    value: z
+      .object({
+        mobile: filterTagExperienceSchema,
+        web: filterTagExperienceSchema,
+      })
+      .passthrough(),
   })
   .passthrough();
 

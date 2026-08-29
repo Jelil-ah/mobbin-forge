@@ -17,14 +17,18 @@ export function formatApps(apps: AppResult[]): string {
       .slice(0, 2)
       .map((s) => s.screenUrl)
       .join("\n    ");
+    const hasMetrics = app.popularityMetric !== undefined || app.trendingMetric !== undefined;
     return [
       `### ${i + 1}. ${app.appName}`,
       `- **Tagline**: ${app.appTagline}`,
-      `- **Category**: ${app.allAppCategories.join(", ")}`,
+      // `allAppCategories` is absent from `/api/search/fetch-search-page-apps`
+      // (confirmed 2026-08-28) — omit the line rather than print an empty category.
+      app.allAppCategories?.length ? `- **Category**: ${app.allAppCategories.join(", ")}` : "",
       `- **Platform**: ${app.platform}`,
       `- **App ID**: ${app.id}`,
       `- **Version ID**: ${app.appVersionId}`,
-      `- **Popularity**: ${app.popularityMetric} | **Trending**: ${app.trendingMetric}`,
+      // Same route also dropped popularity/trending metrics — omit when both are absent.
+      hasMetrics ? `- **Popularity**: ${app.popularityMetric} | **Trending**: ${app.trendingMetric}` : "",
       `- **Logo**: ${app.appLogoUrl}`,
       screens ? `- **Preview screens**:\n    ${screens}` : "",
     ]
