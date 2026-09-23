@@ -451,16 +451,10 @@ export class MobbinApiClient {
       }
     }
 
-    // Fallback to /_/ if versionId not found (legacy behavior, likely wrong screens)
-    const path = versionId
-      ? `/apps/${slug}/${versionId}/screens`
-      : `/apps/${slug}/_/screens`;
-
     if (!versionId) {
-      console.warn(
-        `[getAppPage] Could not resolve appVersionId for ${slug} — falling back to /_/ (screens may be incorrect)`,
-      );
+      throw new Error(`Could not resolve appVersionId for ${slug}; refusing to return unrelated screens.`);
     }
+    const path = `/apps/${slug}/${versionId}/screens`;
 
     const res = await fetch(`${MOBBIN_BASE_URL}${path}`, {
       headers: {
@@ -474,7 +468,12 @@ export class MobbinApiClient {
     }
     const html = await res.text();
 
-    const payload = extractAppPagePayload(html, path);
+    const payload = extractAppPagePayload(html, path, {
+      appId: params.appId,
+      platform: params.platform,
+      versionId,
+      slug,
+    });
     const flows = z.array(flowResultSchema).parse(payload[0].value);
     const screens = z.array(appPageScreenSchema).parse(payload[1].value);
     return { flows, screens, appName: app.appName, slug };
@@ -624,18 +623,14 @@ function slugifyAppName(name: string): string {
 }
 
 /**
- * Extract screen URLs from Mobbin's SSR'd app-detail HTML. The page streams data via
- * `self.__next_f.push([1, "<chunk>"])` calls. We concatenate chunks, then extract
- * all screenUrl paths (content/app_screens/{uuid}.png) via regex and reconstruct
- * full Supabase URLs.
- *
- * Fallback approach: the structured JSON payload format changed, but screenUrls
- * are still present as strings in the flight stream. Verified 2026-07-14 on ChatGPT
- * (20 screens found).
- *
- * Path is passed in for error attribution.
+ * Extract the target app's structured screens and flows from its Next.js flight stream.
+ * Other screen URLs in the page can belong to recommendations or related content.
  */
-function extractAppPagePayload(html: string, path: string): z.infer<typeof appPagePayloadSchema> {
+export function extractAppPagePayload(
+  html: string,
+  path: string,
+  expected: { appId: string; platform: string; versionId: string; slug: string },
+): z.infer<typeof appPagePayloadSchema> {
   const chunkRe = /self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\s*\]\)/g;
   let stream = "";
   let m: RegExpExecArray | null;
@@ -647,7 +642,31 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
     }
   }
 
-  // The real, un-polluted screens live in a deferred RSC dataPromise chunk shaped
+  // Current pages put the data directly in an RSC component's props. Each
+  // newline-delimited flight record has a hex ID followed by a JSON value.
+  for (const line of stream.split("\n")) {
+    if (!line.includes('"appSlug"') || !line.includes('"partialFlows"')) continue;
+    const colon = line.indexOf(":");
+    if (colon < 0) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line.slice(colon + 1));
+    } catch {
+      // Another component may contain the same field names; inspect the next record.
+      continue;
+    }
+    if (!Array.isArray(record)) continue;
+    for (const entry of record) {
+      if (!entry || typeof entry !== "object") continue;
+      const data = entry as Record<string, unknown>;
+      if (data.appSlug !== expected.slug || data.appVersionId !== expected.versionId) continue;
+      if (Array.isArray(data.screens) && Array.isArray(data.partialFlows)) {
+        return buildAppPagePayload(data.screens, data.partialFlows, expected, path);
+      }
+    }
+  }
+
+  // Older pages put the data in a deferred RSC dataPromise chunk shaped
   // `<ref>:[{"value":{"partialFlows":[...],"screens":[...]}}]`. `value.screens` is a
   // fully-structured array (screenUrl, width, height, screenElements, screenPatterns,
   // appVersionId, ...) scoped to the TARGET app only. The naked
@@ -658,86 +677,61 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
     const braceStart = stream.indexOf(":[", marker.index) + 1;
     const raw = sliceBalanced(stream, braceStart);
     if (raw) {
+      let parsed: Array<{
+        value?: {
+          screens?: Array<Record<string, unknown>>;
+          partialFlows?: Array<Record<string, unknown>>;
+        };
+      }>;
       try {
-        const parsed = JSON.parse(raw) as Array<{
-          value?: {
-            screens?: Array<Record<string, unknown>>;
-            partialFlows?: Array<Record<string, unknown>>;
-          };
-        }>;
-        const structured = parsed[0]?.value?.screens;
-        if (Array.isArray(structured) && structured.length > 0) {
-          // Index screens by id so each flow's screen refs (which carry only
-          // screenId + order + hotspot) can be enriched with the real URL and
-          // dimensions from the flat screens list.
-          const byId = new Map<string, Record<string, unknown>>();
-          for (const s of structured) {
-            const id = s.id as string | undefined;
-            if (id) byId.set(id, s);
-          }
-
-          const partialFlows = parsed[0]?.value?.partialFlows ?? [];
-          const flows = partialFlows.map((f) => {
-            const flowScreens = ((f.screens as Array<Record<string, unknown>>) ?? []).map((fs) => {
-              const full = byId.get(fs.screenId as string) ?? {};
-              return {
-                ...fs,
-                screenUrl: (full.screenUrl as string) ?? "",
-                width: (full.width as number) ?? 0,
-                height: (full.height as number) ?? 0,
-              };
-            });
-            // Flows expose clips via videoCdnVideoSources, not a flat videoUrl.
-            const videoSources = f.videoCdnVideoSources as Array<{ url?: string }> | undefined;
-            return {
-              ...f,
-              videoUrl: videoSources?.[0]?.url ?? null,
-              screens: flowScreens,
-            };
-          });
-
-          return [{ value: flows }, { value: structured }, { value: {} }];
-        }
+        parsed = JSON.parse(raw);
       } catch {
-        // Fall through to the regex fallback below if the chunk won't parse.
+        throw new Error(`Could not parse structured app screens in ${path}.`);
+      }
+      const structured = parsed[0]?.value?.screens;
+      const partialFlows = parsed[0]?.value?.partialFlows;
+      if (Array.isArray(structured) && Array.isArray(partialFlows)) {
+        return buildAppPagePayload(structured, partialFlows, expected, path);
       }
     }
   }
 
-  // Fallback: naked screenUrl regex (legacy). May include recommended-app previews,
-  // so only used when the structured dataPromise chunk can't be located/parsed.
-  const screenUrlRe = /content\/app_screens\/[a-f0-9-]+\.png/g;
-  const screenPaths = Array.from(new Set(stream.match(screenUrlRe) || []));
+  throw new Error(`Could not locate structured app screens in ${path}; refusing to return unrelated screens.`);
+}
 
-  if (screenPaths.length === 0) {
-    throw new Error(
-      `Could not locate any screen URLs in ${path}. Mobbin may have changed its SSR format, or the slug resolved to a 404 page.`,
-    );
+function buildAppPagePayload(
+  screens: Array<Record<string, unknown>>,
+  partialFlows: Array<Record<string, unknown>>,
+  expected: { appId: string; platform: string; versionId: string },
+  path: string,
+): z.infer<typeof appPagePayloadSchema> {
+  if (
+    screens.some(
+      (screen) =>
+        screen.appId !== expected.appId ||
+        screen.platform !== expected.platform ||
+        screen.appVersionId !== expected.versionId,
+    )
+  ) {
+    throw new Error(`App screen identity mismatch in ${path}; refusing to return unrelated screens.`);
   }
 
-  const screens = screenPaths.map((p) => {
-    const uuid = p.match(/([a-f0-9-]+)\.png$/)?.[1] || "";
-    return {
-      type: "screen",
-      id: uuid,
-      screenUrl: `https://ujasntkfphywizsdaapi.supabase.co/storage/v1/object/public/${p}`,
-      createdAt: new Date().toISOString(),
-      width: 0,
-      height: 0,
-      fullpageScreenUrl: null,
-      screenElements: [],
-      screenPatterns: [],
-      isAppKeyScreen: false,
-      appId: "",
-      appName: "",
-      appLogoUrl: "",
-      platform: "",
-      appVersionId: "",
-      appVersionPublishedAt: "",
-    };
+  const byId = new Map(screens.map((screen) => [screen.id, screen]));
+  const flows = partialFlows.map((flow) => {
+    const flowScreens = ((flow.screens as Array<Record<string, unknown>>) ?? []).map((screen) => {
+      const full = byId.get(screen.screenId) ?? {};
+      return {
+        ...screen,
+        screenUrl: (full.screenUrl as string) ?? "",
+        width: (full.width as number) ?? 0,
+        height: (full.height as number) ?? 0,
+      };
+    });
+    const videoSources = flow.videoCdnVideoSources as Array<{ url?: string }> | undefined;
+    return { ...flow, videoUrl: videoSources?.[0]?.url ?? null, screens: flowScreens };
   });
 
-  return [{ value: [] }, { value: screens }, { value: {} }];
+  return [{ value: flows }, { value: screens }, { value: {} }];
 }
 
 /**
