@@ -71,8 +71,8 @@ export const appResultSchema = z
     appTagline: z.string(),
     platform: z.string(),
     keywords: z.array(z.string()).optional(),
-    appVersionId: z.string(),
-    appVersionPublishedAt: z.string(),
+    appVersionId: z.string().nullish().default(""),
+    appVersionPublishedAt: z.string().nullish().default(""),
     previewScreens: z.array(previewScreenSchema),
     previewVideoUrl: z.string().nullable().optional(),
     popularityMetric: z.number().optional(),
@@ -106,7 +106,7 @@ export const screenResultSchema = z
     fullpageScreenUrl: z.string().nullable().optional(),
     screenPatterns: z.array(z.string()),
     screenElements: z.array(z.string()),
-    appVersionId: z.string(),
+    appVersionId: z.string().nullish().default(""),
     appId: z.string(),
     appName: z.string(),
     appLogoUrl: z.string(),
@@ -177,12 +177,12 @@ export const flowResultSchema = z
     actions: z.array(z.string()).optional().default([]),
     videoUrl: z.string().nullable().optional(),
     screens: z.array(flowScreenSchema).optional().default([]),
-    appVersionId: z.string().optional(),
-    appId: z.string().optional(),
-    appName: z.string().optional(),
-    appCategory: z.string().optional(),
-    appLogoUrl: z.string().nullable().optional(),
-    platform: z.string().optional(),
+    appVersionId: z.string().nullish(),
+    appId: z.string().nullish(),
+    appName: z.string().nullish(),
+    appCategory: z.string().nullish(),
+    appLogoUrl: z.string().nullish(),
+    platform: z.string().nullish(),
   })
   .passthrough();
 
@@ -341,7 +341,10 @@ const filterTagEntrySchema = z
     displayName: z.string(),
     definition: z.string().optional(),
     hidden: z.boolean().optional(),
-    contentCounts: z.record(z.union([z.record(z.number()), z.number()])).nullable().optional(),
+    contentCounts: z
+      .record(z.union([z.record(z.number()), z.number()]))
+      .nullable()
+      .optional(),
   })
   .passthrough();
 
@@ -378,7 +381,10 @@ export const popularAppEntrySchema = z
     app_id: z.string(),
     app_name: z.string(),
     app_logo_url: z.string().optional(),
-    preview_screens: z.array(z.object({ id: z.string(), screenUrl: z.string() }).passthrough()).optional().default([]),
+    preview_screens: z
+      .array(z.object({ id: z.string(), screenUrl: z.string() }).passthrough())
+      .optional()
+      .default([]),
     app_category: z.string().optional(),
     secondary_app_categories: z.array(z.string()).optional().default([]),
     popularity_metric: z.number().optional(),
@@ -437,8 +443,8 @@ export const appPageScreenSchema = z
     appName: z.string().optional().default(""),
     appLogoUrl: z.string().nullable().optional(),
     platform: z.string().optional().default(""),
-    appVersionId: z.string().optional().default(""),
-    appVersionPublishedAt: z.string().optional().default(""),
+    appVersionId: z.string().nullish().default(""),
+    appVersionPublishedAt: z.string().nullish().default(""),
     ocrBoundingBoxes: z.array(ocrBoundingBoxSchema).nullable().optional(),
   })
   .passthrough();
@@ -475,7 +481,9 @@ export const searchAppsResponseSchema = contentSearchResponseSchema(appResultSch
 export const searchScreensResponseSchema = contentSearchResponseSchema(screenResultSchema);
 export const searchFlowsResponseSchema = contentSearchResponseSchema(flowResultSchema);
 export const searchableAppsResponseSchema = valueResponseSchema(z.array(searchableAppSchema));
-export const popularAppsResponseSchema = valueResponseSchema(z.record(z.array(popularAppEntrySchema)));
+export const popularAppsResponseSchema = valueResponseSchema(
+  z.record(z.array(popularAppEntrySchema)),
+);
 export const collectionsResponseSchema = valueResponseSchema(z.array(collectionSchema));
 export const dictionaryDefinitionsResponseSchema = valueResponseSchema(
   z.array(dictionaryCategorySchema),

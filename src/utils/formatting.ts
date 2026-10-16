@@ -26,9 +26,11 @@ export function formatApps(apps: AppResult[]): string {
       app.allAppCategories?.length ? `- **Category**: ${app.allAppCategories.join(", ")}` : "",
       `- **Platform**: ${app.platform}`,
       `- **App ID**: ${app.id}`,
-      `- **Version ID**: ${app.appVersionId}`,
+      app.appVersionId ? `- **Version ID**: ${app.appVersionId}` : "",
       // Same route also dropped popularity/trending metrics — omit when both are absent.
-      hasMetrics ? `- **Popularity**: ${app.popularityMetric} | **Trending**: ${app.trendingMetric}` : "",
+      hasMetrics
+        ? `- **Popularity**: ${app.popularityMetric} | **Trending**: ${app.trendingMetric}`
+        : "",
       `- **Logo**: ${app.appLogoUrl}`,
       screens ? `- **Preview screens**:\n    ${screens}` : "",
     ]

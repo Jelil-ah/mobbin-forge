@@ -73,6 +73,21 @@ claude mcp add mobbin -- npx -y mobbin-mcp
 - "Pull up Duolingo's onboarding and walk me through the design decisions"
 - "Find login screens using bottom sheets and extract color palettes"
 
+## Bundled Agent Skills
+
+This repository bundles the official Mobbin skill suite in the `skills/` directory, adapted specifically for `mobbin-forge` MCP tools:
+
+- **`skills/search`**: Search patterns, app lookups via `mobbin_quick_search`, and screen inspections via `mobbin_get_screen_detail`.
+- **`skills/redesign-screen`**: Complete workflow to redesign any screen or component backed by market-proven references.
+- **`skills/best-practices`**: Scoping, capabilities, and platform guidance.
+- **`skills/plain-writing`**: Clear, direct, senior designer writing style with zero AI puffery.
+
+### Installing skills in Claude Code:
+Copy the skills to your Claude Code skills directory:
+```bash
+cp -r skills/* ~/.claude/skills/
+```
+
 ## How it works
 
 Calls Mobbin's internal API routes using your session cookie. Tokens auto-refresh via Supabase and persist to `~/.mobbin-mcp/auth.json`. **getAppScreens** resolves the target app's real version, then parses its structured Next.js RSC data chunk — screens, patterns, elements, and dimensions — before downloading images through Bytescale. Optional color extraction uses [sharp](https://sharp.pixelplumbing.com/).

@@ -433,36 +433,9 @@ export class MobbinApiClient {
     const slug = `${slugifyAppName(app.appName)}-${params.platform}-${params.appId}`;
     const cookie = await this.auth.getCookieValue();
 
-    // STEP 1: Resolve appVersionId via 307 redirect
+    // Resolve canonical app path with redirect follow
     const canonicalPath = `/apps/${slug}`;
-    const redirectRes = await fetch(`${MOBBIN_BASE_URL}${canonicalPath}`, {
-      headers: { Cookie: cookie },
-      redirect: "manual",
-    });
-
-    let versionId: string | null = null;
-    if (redirectRes.status === 307) {
-      const location = redirectRes.headers.get("location");
-      if (location) {
-        const versionMatch = location.match(/\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\//);
-        if (versionMatch) {
-          versionId = versionMatch[1];
-        }
-      }
-    }
-
-    // Fallback to /_/ if versionId not found (legacy behavior, likely wrong screens)
-    const path = versionId
-      ? `/apps/${slug}/${versionId}/screens`
-      : `/apps/${slug}/_/screens`;
-
-    if (!versionId) {
-      console.warn(
-        `[getAppPage] Could not resolve appVersionId for ${slug} — falling back to /_/ (screens may be incorrect)`,
-      );
-    }
-
-    const res = await fetch(`${MOBBIN_BASE_URL}${path}`, {
+    const res = await fetch(`${MOBBIN_BASE_URL}${canonicalPath}`, {
       headers: {
         Cookie: cookie,
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9",
@@ -470,11 +443,13 @@ export class MobbinApiClient {
       redirect: "follow",
     });
     if (!res.ok) {
-      throw new Error(`Mobbin app page fetch failed: ${res.status} ${res.statusText} - ${path}`);
+      throw new Error(
+        `Mobbin app page fetch failed: ${res.status} ${res.statusText} - ${canonicalPath}`,
+      );
     }
     const html = await res.text();
 
-    const payload = extractAppPagePayload(html, path);
+    const payload = extractAppPagePayload(html, res.url || canonicalPath);
     const flows = z.array(flowResultSchema).parse(payload[0].value);
     const screens = z.array(appPageScreenSchema).parse(payload[1].value);
     return { flows, screens, appName: app.appName, slug };
@@ -629,31 +604,114 @@ function slugifyAppName(name: string): string {
  * all screenUrl paths (content/app_screens/{uuid}.png) via regex and reconstruct
  * full Supabase URLs.
  *
- * Fallback approach: the structured JSON payload format changed, but screenUrls
- * are still present as strings in the flight stream. Verified 2026-07-14 on ChatGPT
- * (20 screens found).
+ * Extract structured screens and flows from Next.js RSC stream chunks in an SSR HTML page.
+ *
+ * Next.js embeds the RSC flight stream across `<script>` tags as `self.__next_f.push([1, "..."])`.
+ * Modern Mobbin pages inline the target app's screen catalog and user flows inside
+ * the main component props: `[..., {"appSlug": "...", "screens": [...], "partialFlows": [...]}]`.
+ * Older pages inlined deferred dataPromise chunks shaped `<hex>:[{"value":{"partialFlows":...}}]`.
  *
  * Path is passed in for error attribution.
  */
 function extractAppPagePayload(html: string, path: string): z.infer<typeof appPagePayloadSchema> {
-  const chunkRe = /self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\s*\]\)/g;
+  // Extract and unescape all Next.js RSC chunks from the HTML document.
+  // We locate chunk boundaries via string indexing rather than regex to safely
+  // handle multi-megabyte payloads with nested escaped quotes.
   let stream = "";
-  let m: RegExpExecArray | null;
-  while ((m = chunkRe.exec(html)) !== null) {
-    try {
-      stream += JSON.parse(`"${m[1]}"`) as string;
-    } catch {
-      // Skip malformed chunks — partial streams happen near end-of-document.
+  let pos = 0;
+  const prefix = 'self.__next_f.push([1,"';
+  while (true) {
+    const idx = html.indexOf(prefix, pos);
+    if (idx === -1) break;
+    const startStr = idx + prefix.length - 1;
+    const endIdx = html.indexOf('"])</script>', startStr);
+    if (endIdx !== -1) {
+      try {
+        stream += JSON.parse(html.slice(startStr, endIdx + 1)) as string;
+      } catch {
+        // Skip malformed chunks — partial streams happen near end-of-document.
+      }
+      pos = endIdx + 11;
+    } else {
+      pos = idx + prefix.length;
     }
   }
 
-  // The real, un-polluted screens live in a deferred RSC dataPromise chunk shaped
-  // `<ref>:[{"value":{"partialFlows":[...],"screens":[...]}}]`. `value.screens` is a
-  // fully-structured array (screenUrl, width, height, screenElements, screenPatterns,
-  // appVersionId, ...) scoped to the TARGET app only. The naked
-  // `content/app_screens/{uuid}.png` regex used before also caught recommended-app
-  // preview URLs rendered at the top of the page, returning the WRONG app's screens.
-  const marker = stream.match(/[0-9a-f]+:\[\{"value":\{"partialFlows"/);
+  // 1. Modern Next.js App Router format:
+  // Component props are serialized into an RSC chunk containing "appSlug", "screens", and "partialFlows".
+  const slugIdx = stream.indexOf('"appSlug":');
+  if (slugIdx !== -1) {
+    const colonBracket = stream.lastIndexOf(":[", slugIdx);
+    if (colonBracket !== -1) {
+      const raw = sliceBalanced(stream, colonBracket + 1);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as unknown[];
+          const props = parsed[3] as
+            | {
+                appVersion?: { id?: string; publishedAt?: string };
+                screens?: Array<Record<string, unknown>>;
+                partialFlows?: Array<Record<string, unknown>>;
+              }
+            | undefined;
+
+          if (props && (Array.isArray(props.screens) || Array.isArray(props.partialFlows))) {
+            const versionId = props.appVersion?.id ?? "";
+            const publishedAt = props.appVersion?.publishedAt ?? "";
+            const rawScreens = props.screens ?? [];
+            const screens: Array<Record<string, unknown>> = rawScreens.map((s) => ({
+              ...s,
+              appVersionId: (s.appVersionId as string | undefined) ?? versionId,
+              appVersionPublishedAt: (s.appVersionPublishedAt as string | undefined) ?? publishedAt,
+            }));
+
+            const byId = new Map<string, Record<string, unknown>>();
+            for (const s of screens) {
+              const id = s.id as string | undefined;
+              if (id) byId.set(id, s);
+            }
+
+            const rawFlows = props.partialFlows ?? [];
+            const flows = rawFlows.map((f) => {
+              const flowScreens = ((f.screens as Array<Record<string, unknown>>) ?? []).map(
+                (fs) => {
+                  const full = byId.get(fs.screenId as string) ?? {};
+                  return {
+                    ...fs,
+                    screenUrl: (full.screenUrl as string) ?? "",
+                    width: (full.width as number) ?? 0,
+                    height: (full.height as number) ?? 0,
+                  };
+                },
+              );
+
+              const vCdn = f.videoCdnVideoSources as
+                | { source?: { url?: string }; sources?: Array<{ url?: string }> }
+                | Array<{ url?: string }>
+                | undefined;
+              const videoUrl = Array.isArray(vCdn)
+                ? (vCdn[0]?.url ?? null)
+                : (vCdn?.source?.url ?? vCdn?.sources?.[0]?.url ?? null);
+
+              return {
+                ...f,
+                videoUrl,
+                screens: flowScreens,
+              };
+            });
+
+            return [{ value: flows }, { value: screens }, { value: {} }];
+          }
+        } catch {
+          // Fall through to legacy format if this block fails
+        }
+      }
+    }
+  }
+
+  // 2. Legacy deferred dataPromise chunk format:
+  // `<ref>:[{"value":{"partialFlows":[...],"screens":[...]}}]`
+  const marker = stream.match(/[0-9a-f]+:\[\{"value":\{/);
   if (marker) {
     const braceStart = stream.indexOf(":[", marker.index) + 1;
     const raw = sliceBalanced(stream, braceStart);
@@ -666,10 +724,7 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
           };
         }>;
         const structured = parsed[0]?.value?.screens;
-        if (Array.isArray(structured) && structured.length > 0) {
-          // Index screens by id so each flow's screen refs (which carry only
-          // screenId + order + hotspot) can be enriched with the real URL and
-          // dimensions from the flat screens list.
+        if (Array.isArray(structured)) {
           const byId = new Map<string, Record<string, unknown>>();
           for (const s of structured) {
             const id = s.id as string | undefined;
@@ -687,7 +742,6 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
                 height: (full.height as number) ?? 0,
               };
             });
-            // Flows expose clips via videoCdnVideoSources, not a flat videoUrl.
             const videoSources = f.videoCdnVideoSources as Array<{ url?: string }> | undefined;
             return {
               ...f,
@@ -699,45 +753,14 @@ function extractAppPagePayload(html: string, path: string): z.infer<typeof appPa
           return [{ value: flows }, { value: structured }, { value: {} }];
         }
       } catch {
-        // Fall through to the regex fallback below if the chunk won't parse.
+        // Fall through
       }
     }
   }
 
-  // Fallback: naked screenUrl regex (legacy). May include recommended-app previews,
-  // so only used when the structured dataPromise chunk can't be located/parsed.
-  const screenUrlRe = /content\/app_screens\/[a-f0-9-]+\.png/g;
-  const screenPaths = Array.from(new Set(stream.match(screenUrlRe) || []));
-
-  if (screenPaths.length === 0) {
-    throw new Error(
-      `Could not locate any screen URLs in ${path}. Mobbin may have changed its SSR format, or the slug resolved to a 404 page.`,
-    );
-  }
-
-  const screens = screenPaths.map((p) => {
-    const uuid = p.match(/([a-f0-9-]+)\.png$/)?.[1] || "";
-    return {
-      type: "screen",
-      id: uuid,
-      screenUrl: `https://ujasntkfphywizsdaapi.supabase.co/storage/v1/object/public/${p}`,
-      createdAt: new Date().toISOString(),
-      width: 0,
-      height: 0,
-      fullpageScreenUrl: null,
-      screenElements: [],
-      screenPatterns: [],
-      isAppKeyScreen: false,
-      appId: "",
-      appName: "",
-      appLogoUrl: "",
-      platform: "",
-      appVersionId: "",
-      appVersionPublishedAt: "",
-    };
-  });
-
-  return [{ value: [] }, { value: screens }, { value: {} }];
+  throw new Error(
+    `Could not locate structured target-app screens for ${path}. Mobbin may have updated its page layout.`,
+  );
 }
 
 /**
